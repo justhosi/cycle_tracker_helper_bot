@@ -25,17 +25,26 @@ TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 DATE_RE = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
 
 HELP_TEXT = (
-    "👋 *Cycle Tracker Bot*\n\n"
+    "👋 *Dina's Cycle Tracker*\n\n"
     "Send me the first day of the last period as a date, and I'll tell you "
     "roughly where in the cycle you are today.\n\n"
-    "*Examples:*\n"
-    "`2026-06-20` — uses default 28-day cycle, 5-day period\n"
-    "`/cycle 2026-06-20 30` — custom 30-day cycle\n"
-    "`/cycle 2026-06-20 30 6` — custom 30-day cycle, 6-day period\n\n"
+    "*Menu commands* (tap the ☰ menu, then add a date):\n"
+    "`/cycle30 2026-06-20` — 30-day cycle, default 5-day period\n"
+    "`/cycle30_6 2026-06-20` — 30-day cycle, 6-day period\n\n"
+    "*Or just send a bare date:*\n"
+    "`2026-06-20` — uses default 28-day cycle, 5-day period\n\n"
+    "*Advanced (any cycle/period length):*\n"
+    "`/cycle 2026-06-20 32 7` — 32-day cycle, 7-day period\n\n"
     "I don't store anything — send the date fresh each time.\n\n"
     "_This gives an estimate based on averages, not a medical or fertility diagnosis. "
     "For contraception, fertility planning, or irregular cycles, please talk to a doctor._"
 )
+
+# Menu command presets: command name -> (cycle_length, period_length, label)
+PRESET_COMMANDS = {
+    "cycle30": (30, 5, "30-day cycle"),
+    "cycle30_6": (30, 6, "30-day cycle, 6-day period"),
+}
 
 
 # ---------- cycle math ----------
@@ -126,16 +135,42 @@ def send_message(chat_id, text):
 
 # ---------- message parsing ----------
 
-def parse_message(text):
+def extract_date(text):
+    """Find a YYYY-MM-DD date anywhere in the text. Returns a date or None."""
     match = DATE_RE.search(text)
     if not match:
         return None
     year, month, day = (int(g) for g in match.groups())
-    last_period_date = datetime(year, month, day).date()
+    return datetime(year, month, day).date()
+
+
+def parse_freeform(text):
+    """
+    Parse a bare date or a generic '/cycle DATE [cycle_len] [period_len]'
+    message, defaulting to a 28-day cycle / 5-day period.
+    """
+    match = DATE_RE.search(text)
+    if not match:
+        return None
+    last_period_date = extract_date(text)
     numbers = re.findall(r"\b(\d{1,2})\b", text[match.end():])
     cycle_length = int(numbers[0]) if len(numbers) >= 1 else 28
     period_length = int(numbers[1]) if len(numbers) >= 2 else 5
     return last_period_date, cycle_length, period_length
+
+
+def split_command(text):
+    """
+    If text starts with a Telegram command (e.g. '/cycle30 2026-06-20' or
+    '/cycle30@YourBot 2026-06-20'), return (command_name, rest_of_text).
+    Otherwise return (None, text).
+    """
+    if not text.startswith("/"):
+        return None, text
+    parts = text.split(maxsplit=1)
+    command = parts[0][1:].split("@")[0].lower()
+    rest = parts[1] if len(parts) > 1 else ""
+    return command, rest
 
 
 def handle_update(update):
@@ -145,11 +180,32 @@ def handle_update(update):
     chat_id = message["chat"]["id"]
     text = message["text"].strip()
 
-    if text in ("/start", "/help"):
+    command, rest = split_command(text)
+
+    if command in ("start", "help"):
         send_message(chat_id, HELP_TEXT)
         return
 
-    parsed = parse_message(text)
+    # Preset commands: /cycle30 and /cycle30_6 — fixed lengths, just need a date.
+    if command in PRESET_COMMANDS:
+        cycle_length, period_length, label = PRESET_COMMANDS[command]
+        last_period_date = extract_date(rest)
+        if not last_period_date:
+            send_message(
+                chat_id,
+                f"For the {label}, send the date too, e.g. `/{command} 2026-06-20`.",
+            )
+            return
+        try:
+            status = get_cycle_status(last_period_date, cycle_length, period_length)
+        except ValueError as e:
+            send_message(chat_id, f"⚠️ {e}")
+            return
+        send_message(chat_id, format_status_message(status))
+        return
+
+    # Generic /cycle command or a bare date — full custom parsing.
+    parsed = parse_freeform(text)
     if not parsed:
         send_message(chat_id, "I couldn't find a date in that message. Try `YYYY-MM-DD`, e.g. `2026-06-20`.")
         return
