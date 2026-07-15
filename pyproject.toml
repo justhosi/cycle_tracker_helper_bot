@@ -1,1 +1,2 @@
-[tool.vercel] entrypoint = "api.webhook:handler"
+[tool.vercel]
+entrypoint = "my_package.api:app"
