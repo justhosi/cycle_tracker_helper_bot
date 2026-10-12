@@ -1,0 +1,8 @@
+# Secrets: local env vars (bot token etc.) — never commit
+.env
+
+# Vercel CLI local state (project link info)
+.vercel
+
+# Python bytecode caches
+__pycache__/
