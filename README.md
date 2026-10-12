@@ -13,6 +13,8 @@ current cycle day, phase, a progress bar, and the estimated next period date.
 | `/cycle30_6 2026-06-20` | 30-day cycle, 6-day period |
 | `/cycle 2026-06-20 32 7` | Any cycle length, any period length |
 | `2026-06-20` | Bare date → defaults to a 28-day cycle, 5-day period |
+| `/cycle30` (no date) | Reuses the last date saved for this chat |
+| `/cycle` (no date) | Reuses the saved date *and* its cycle/period lengths |
 
 Dates are always `YYYY-MM-DD`. Dates in the future are rejected, cycle length must
 be 15–45 days, and period length must be shorter than the cycle.
@@ -82,14 +84,27 @@ and max duration; it is optional and only cosmetic/tuning.
 4. Optional but recommended: also add `TELEGRAM_WEBHOOK_SECRET` in Vercel — a
    random string of letters, digits, `_` and `-` (no spaces). Telegram will echo
    it back on every request, and posts without it are rejected with a `403`.
-5. Point Telegram at the endpoint. Pass the same secret as `secret_token`, or
+5. Optional — per-chat memory. Add an Upstash Redis database from the Vercel
+   Marketplace (**Storage → Create → Upstash**); it injects its credentials into
+   the project. With those present, the last date each chat sends is saved, so a
+   bare `/cycle30` or `/cycle` reuses it instead of asking again. Worth reading
+   the next paragraph before you rely on it.
+6. Point Telegram at the endpoint. Pass the same secret as `secret_token`, or
    omit that flag if you skipped step 4:
    ```bash
    curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
         -d "url=https://<your-project>.vercel.app/api/webhook" \
         -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
    ```
-6. Send `/start` to your bot to check it answers.
+7. Send `/start` to your bot to check it answers.
+
+> Storage env vars: the code reads `KV_REST_API_URL` and `KV_REST_API_TOKEN`.
+> Depending on which integration version Vercel installs, the variables may
+> arrive under those names or as `UPSTASH_REDIS_REST_URL` /
+> `UPSTASH_REDIS_REST_TOKEN`. Check **Project → Settings → Environment
+> Variables** and rename the two constants at the top of the storage section in
+> `api/webhook.py` if they differ. A mismatch is silent: nothing is stored, no
+> error is raised, and the bot keeps working — it just never remembers dates.
 
 > Warning: `TELEGRAM_WEBHOOK_SECRET` and Telegram's `secret_token` must match. If
 > they don't (or you set the env var but registered without the flag), every
@@ -98,6 +113,10 @@ and max duration; it is optional and only cosmetic/tuning.
 
 ## Notes
 
-- **Stateless.** The bot stores nothing; send the date fresh each message.
+- **Memory is optional.** With Upstash credentials configured (step 5), the last
+  date a chat sends is saved and reused by bare `/cycle30` / `/cycle` commands;
+  a reply that reused one says which date it used. Without storage the bot keeps
+  nothing and every command needs its own date. Either way a failed storage call
+  never blocks a reply — it just falls back to asking for the date.
 - **Estimates only.** Based on average cycle lengths, not a medical or fertility
   diagnosis. For contraception or irregular cycles, talk to a doctor.

@@ -18,6 +18,13 @@ Env var optional but strongly recommended (see README):
         X-Telegram-Bot-Api-Secret-Token header or it gets a 403.
         Leave it unset and the endpoint accepts posts from anyone -- fine for
         local testing, not for a bot that is live on the internet.
+
+Env vars optional, enabling per-chat memory of the last date (see README):
+    KV_REST_API_URL, KV_REST_API_TOKEN
+        Upstash Redis credentials. When BOTH are set, the last date a chat
+        sent is stored and reused by a bare /cycle30 or /cycle command.
+        When either is missing, nothing is stored or looked up and every
+        command needs its own date -- the bot works fine in both modes.
 """
 
 import os
@@ -33,6 +40,15 @@ import requests
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 DATE_RE = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
 
+# The one line of HELP_TEXT that must not lie: whether dates are remembered
+# depends on whether optional storage is configured, so build_help_text() swaps
+# this sentence at send time instead of hard-coding either version.
+STATELESS_SENTENCE = "I don't store anything — send the date fresh each time."
+STORAGE_SENTENCE = (
+    "I remember the last date you send in each chat, so `/cycle30` (or `/cycle`) "
+    "on its own reuses it. Send a new date any time to update it."
+)
+
 HELP_TEXT = (
     "👋 *Dina's Cycle Tracker*\n\n"
     "Send me the first day of the last period as a date, and I'll tell you "
@@ -44,7 +60,7 @@ HELP_TEXT = (
     "`2026-06-20` — uses default 28-day cycle, 5-day period\n\n"
     "*Advanced (any cycle/period length):*\n"
     "`/cycle 2026-06-20 32 7` — 32-day cycle, 7-day period\n\n"
-    "I don't store anything — send the date fresh each time.\n\n"
+    + STATELESS_SENTENCE + "\n\n"
     "_This gives an estimate based on averages, not a medical or fertility diagnosis. "
     "For contraception, fertility planning, or irregular cycles, please talk to a doctor._"
 )
@@ -200,6 +216,86 @@ def load_user(chat_id):
     return json.loads(raw) if raw else None
 
 
+def remember_last_period(chat_id, last_period_date, cycle_length, period_length) -> bool:
+    """
+    Best-effort write of one chat's last period date (plus the lengths used with
+    it), stored as an ISO string because JSON has no date type.
+
+    Swallows every storage error on purpose: a Redis outage, a bad token or a
+    quota error must never stop the bot from replying. Worst case the date
+    simply isn't remembered and the user is asked for it again next time.
+
+    Returns True only when the write really succeeded, so the caller never
+    promises "saved for this chat" about a write that quietly failed.
+    """
+    if not kv_enabled():
+        return False
+    try:
+        save_user(chat_id, {
+            "last_period": last_period_date.isoformat(),
+            "cycle_length": cycle_length,
+            "period_length": period_length,
+        })
+        return True
+    except Exception as e:  # noqa: BLE001 - storage is optional, never fatal
+        print(f"Storage write failed (continuing statelessly): {e}")
+        return False
+
+
+def recall_last_period(chat_id):
+    """
+    Best-effort read of a chat's remembered date.
+
+    Returns (last_period_date, cycle_length, period_length), or None when
+    storage is off, nothing was ever saved, or the stored blob is unreadable.
+    Never raises, for the same reason as remember_last_period() above.
+    """
+    if not kv_enabled():
+        return None
+    try:
+        saved = load_user(chat_id) or {}
+        iso = saved.get("last_period")
+        if not iso:
+            return None
+        return (
+            date.fromisoformat(iso),
+            int(saved.get("cycle_length") or 28),
+            int(saved.get("period_length") or 5),
+        )
+    except Exception as e:  # noqa: BLE001 - corrupt data shouldn't break replies
+        print(f"Storage read failed (continuing statelessly): {e}")
+        return None
+
+
+def build_help_text() -> str:
+    """
+    Help text for /start and /help, with the remembering sentence matched to
+    reality: claiming "I don't store anything" while quietly saving dates would
+    be false, and promising memory when storage is off would be worse.
+    """
+    note = STORAGE_SENTENCE if kv_enabled() else STATELESS_SENTENCE
+    return HELP_TEXT.replace(STATELESS_SENTENCE, note)
+
+
+def missing_date_reply(command, label):
+    """
+    Reply for a bare /command that arrived with no date in it.
+
+    Two flavours, because the fix differs: with storage on the user sends a date
+    once and never again, while with storage off they need one every time.
+    """
+    example = f"/{command} 2026-06-20"
+    if kv_enabled():
+        return (
+            f"I don't have a date saved for this chat yet. Send the first day of "
+            f"your last period once, e.g. `{example}`, and after that `/{command}` "
+            f"on its own will reuse it."
+        )
+    if label:
+        return f"For the {label}, send the date too, e.g. `{example}`."
+    return f"Send the date too, e.g. `{example}`."
+
+
 # ---------- message parsing ----------
 
 def extract_date(text):
@@ -250,41 +346,81 @@ def handle_update(update):
     command, rest = split_command(text)
 
     if command in ("start", "help"):
-        send_message(chat_id, HELP_TEXT)
+        send_message(chat_id, build_help_text())
         return
 
-    # Preset commands: /cycle30 and /cycle30_6 — fixed lengths, just need a date.
+    # Work out this message's date and lengths. `from_memory` tracks whether the
+    # date came out of storage instead of the message: we say so in the reply,
+    # and we skip re-saving something we just read.
+    from_memory = False
+
     if command in PRESET_COMMANDS:
+        # Preset commands carry their own cycle/period lengths, so only the date
+        # can come from memory -- and only when the user left it out.
         cycle_length, period_length, label = PRESET_COMMANDS[command]
         last_period_date = extract_date(rest)
         if not last_period_date:
+            remembered = recall_last_period(chat_id)
+            if remembered:
+                last_period_date, _, _ = remembered  # preset lengths win
+                from_memory = True
+            else:
+                send_message(chat_id, missing_date_reply(command, label))
+                return
+
+    elif command == "cycle" and extract_date(rest) is None:
+        # Bare `/cycle` states neither a date nor lengths, so reuse both from
+        # memory -- that is what makes it a useful "same as last time" shortcut.
+        remembered = recall_last_period(chat_id)
+        if not remembered:
+            send_message(chat_id, missing_date_reply("cycle", None))
+            return
+        last_period_date, cycle_length, period_length = remembered
+        from_memory = True
+
+    else:
+        # A bare date, or `/cycle <date> [cycle_len] [period_len]`.
+        parsed = parse_freeform(text)
+        if not parsed:
+            # Text with no date in it. Deliberately NOT answered from memory: a
+            # stray "hi" should never produce a cycle report, so remembered
+            # dates are only ever used by the explicit /commands handled above.
             send_message(
                 chat_id,
-                f"For the {label}, send the date too, e.g. `/{command} 2026-06-20`.",
+                "I couldn't find a date in that message. Try `YYYY-MM-DD`, e.g. `2026-06-20`.",
             )
             return
-        try:
-            status = get_cycle_status(last_period_date, cycle_length, period_length)
-        except ValueError as e:
-            send_message(chat_id, f"⚠️ {e}")
-            return
-        send_message(chat_id, format_status_message(status))
-        return
+        last_period_date, cycle_length, period_length = parsed
 
-    # Generic /cycle command or a bare date — full custom parsing.
-    parsed = parse_freeform(text)
-    if not parsed:
-        send_message(chat_id, "I couldn't find a date in that message. Try `YYYY-MM-DD`, e.g. `2026-06-20`.")
-        return
-
-    last_period_date, cycle_length, period_length = parsed
     try:
         status = get_cycle_status(last_period_date, cycle_length, period_length)
     except ValueError as e:
+        # Nonsense numbers: tell the user, and remember nothing invalid.
         send_message(chat_id, f"⚠️ {e}")
         return
 
-    send_message(chat_id, format_status_message(status))
+    reply = format_status_message(status)
+
+    if from_memory:
+        # Name the date we reused, otherwise the user cannot tell whether they
+        # are looking at today's info or something they typed weeks ago.
+        date_note = f"_Using the date saved for this chat: {last_period_date.isoformat()}_"
+        if (date.today() - last_period_date).days >= status.cycle_length:
+            date_note += (
+                "\n_Heads up: that date is more than one cycle old, so treat this "
+                "as a rough guess and send a fresh date when you can._"
+            )
+        reply = f"{date_note}\n\n{reply}"
+    else:
+        # A fresh, valid date: remember it so the next bare command can reuse
+        # it. Only promise "saved" when the write actually went through.
+        if remember_last_period(chat_id, last_period_date, cycle_length, period_length):
+            reply += (
+                "\n\n_Saved for this chat — next time you can send the command "
+                "without a date._"
+            )
+
+    send_message(chat_id, reply)
 
 
 # ----------------------------------------------------------------------------
