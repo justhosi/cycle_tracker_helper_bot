@@ -37,9 +37,11 @@ api/webhook.py  ->  https://<your-project>.vercel.app/api/webhook
 > The `<your-project>` above is a **placeholder** — replace it with your real
 > Vercel project name (or your custom domain) before using that URL anywhere.
 
-The file exposes `handler`, a `BaseHTTPRequestHandler`: `POST` handles Telegram
-updates and always returns `200` (so Telegram does not retry), and `GET` returns a
-plain "Cycle bot webhook is running." line you can check in a browser.
+The file exposes `handler`, a `BaseHTTPRequestHandler`. `POST` first checks the
+secret header (see step 4 below), then handles the update and returns `200` so
+Telegram does not retry; a request that fails the check gets `403` and is never
+processed. `GET` returns a plain "Cycle bot webhook is running." line you can
+check in a browser.
 
 ## Deployment gotcha: the "No python entrypoint found" error
 
