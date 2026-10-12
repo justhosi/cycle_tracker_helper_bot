@@ -43,8 +43,10 @@ api/webhook.py  ->  https://<your-project>.vercel.app/api/webhook
 The file exposes `handler`, a `BaseHTTPRequestHandler`. `POST` first checks the
 secret header (see step 4 below), then handles the update and returns `200` so
 Telegram does not retry; a request that fails the check gets `403` and is never
-processed. `GET` returns a plain "Cycle bot webhook is running." line you can
-check in a browser.
+processed. `GET` returns a short status line you can check in a browser, e.g.
+`Cycle bot webhook is running. (secret: yes, storage: no)` — the flags say
+whether this deployment can see the webhook-secret and Upstash env vars
+(booleans only, never the values).
 
 ## Deployment gotcha: the "No python entrypoint found" error
 

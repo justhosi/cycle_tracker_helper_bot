@@ -504,8 +504,26 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(b'{"ok": true}')
 
     def do_GET(self):
-        # Handy for checking the endpoint is alive from a browser.
+        # Handy for checking the endpoint is alive from a browser -- and, more
+        # usefully, for checking WHICH optional env vars the deployment that
+        # answered this request can actually see.
+        #
+        # Why this matters: the two hardest things to debug from outside are
+        #   * a missing TELEGRAM_WEBHOOK_SECRET -> the endpoint silently accepts
+        #     every POST, so the secret check looks "not working"; and
+        #   * missing Upstash credentials -> per-chat memory is silently off.
+        # Both are invisible from the outside, so we report their *presence*
+        # as plain booleans. Only "yes"/"no" is shown -- no secret value is
+        # ever read out here -- which is safe to leave world-readable.
+        secret_configured = "yes" if os.environ.get("TELEGRAM_WEBHOOK_SECRET") else "no"
+        storage_configured = "yes" if kv_enabled() else "no"
+
+        body = (
+            f"Cycle bot webhook is running. "
+            f"(secret: {secret_configured}, storage: {storage_configured})"
+        ).encode("utf-8")
+
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Cycle bot webhook is running.")
+        self.wfile.write(body)
