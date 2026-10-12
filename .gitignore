@@ -1,6 +1,10 @@
-# Secrets: local env vars (bot token etc.) — never commit
+# Secrets: local env vars (bot token, webhook secret, etc.) — never commit.
+# `.env` is the generic file; `vercel install upstash` and `vercel env pull`
+# write real credentials to `.env.local` (and other `.env*.local` variants),
+# so ignore those too.
 .env
 .env.local
+.env*.local
 
 # Vercel CLI local state (project link info)
 .vercel
