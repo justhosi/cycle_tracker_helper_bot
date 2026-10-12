@@ -17,7 +17,8 @@ current cycle day, phase, a progress bar, and the estimated next period date.
 | `/cycle` (no date) | Reuses the saved date *and* its cycle/period lengths |
 
 Dates are always `YYYY-MM-DD`. Dates in the future are rejected, cycle length must
-be 15–45 days, and period length must be shorter than the cycle.
+be 15–45 days, and period length must be shorter than the cycle. "Today" means
+today in **Turkey** (`Europe/Istanbul`), not on the server, which runs in UTC.
 
 ## Files
 

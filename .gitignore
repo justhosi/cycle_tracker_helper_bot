@@ -1,5 +1,6 @@
 # Secrets: local env vars (bot token etc.) — never commit
 .env
+.env.local
 
 # Vercel CLI local state (project link info)
 .vercel

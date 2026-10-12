@@ -1,1 +1,7 @@
+# Telegram delivery + Upstash REST calls
 requests>=2.31.0
+
+# IANA timezone database, so zoneinfo.ZoneInfo("Europe/Istanbul") resolves even
+# on a slim runtime that ships no system /usr/share/zoneinfo. Harmless where the
+# OS copy already exists: the stdlib only falls back to this package if it must.
+tzdata>=2024.1

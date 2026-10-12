@@ -34,6 +34,7 @@ import hmac  # constant-time string comparison for the webhook secret check
 from http.server import BaseHTTPRequestHandler
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -72,6 +73,27 @@ PRESET_COMMANDS = {
 }
 
 
+# ---------- timezone ----------
+
+# Turkey runs on UTC+3 all year round (no DST since 2016). We still ask for the
+# named zone rather than hard-coding +03:00, so these rules stay correct on their
+# own if Turkey ever changes its offset again.
+TURKEY_TZ = ZoneInfo("Europe/Istanbul")
+
+
+def today_in_turkey() -> date:
+    """
+    Today's date in Turkey, rather than on whichever machine runs this.
+
+    Vercel executes functions with the clock set to UTC, so a plain date.today()
+    is still *yesterday* in Turkey from 00:00 to 02:59 local time -- precisely
+    when someone is most likely to check where they are in their cycle. Every
+    date comparison in the bot goes through here, so "today" matches the calendar
+    on the user's wall instead of the server's.
+    """
+    return datetime.now(TURKEY_TZ).date()
+
+
 # ---------- cycle math ----------
 
 @dataclass
@@ -87,7 +109,7 @@ class CycleStatus:
 
 
 def get_cycle_status(last_period_start, cycle_length=28, period_length=5, today=None):
-    today = today or date.today()
+    today = today or today_in_turkey()
 
     if last_period_start > today:
         raise ValueError("Last period date can't be in the future.")
@@ -405,7 +427,7 @@ def handle_update(update):
         # Name the date we reused, otherwise the user cannot tell whether they
         # are looking at today's info or something they typed weeks ago.
         date_note = f"_Using the date saved for this chat: {last_period_date.isoformat()}_"
-        if (date.today() - last_period_date).days >= status.cycle_length:
+        if (today_in_turkey() - last_period_date).days >= status.cycle_length:
             date_note += (
                 "\n_Heads up: that date is more than one cycle old, so treat this "
                 "as a rough guess and send a fresh date when you can._"
