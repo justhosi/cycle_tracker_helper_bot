@@ -23,6 +23,7 @@ Env var optional but strongly recommended (see README):
 import os
 import re
 import json
+import hmac  # constant-time string comparison for the webhook secret check
 from http.server import BaseHTTPRequestHandler
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -239,7 +240,21 @@ def _is_from_telegram(headers) -> bool:
     expected = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
     if not expected:
         return True  # no secret configured -> don't lock anyone out (dev only)
-    return headers.get("X-Telegram-Bot-Api-Secret-Token") == expected
+
+    # `or ""` turns a missing header (None) into an empty string, so the
+    # comparison below always gets two strings instead of blowing up on None.
+    supplied = headers.get("X-Telegram-Bot-Api-Secret-Token") or ""
+
+    # Compare as BYTES, not str. Two reasons:
+    #   * hmac.compare_digest is constant-time: it never short-circuits on the
+    #     first mismatching character, so the time it takes leaks no hint about
+    #     how much of the secret an attacker guessed correctly. Plain `==` does
+    #     short-circuit, which is a (minor) timing side channel.
+    #   * The str form of compare_digest raises TypeError on non-ASCII input,
+    #     and HTTP headers can smuggle non-ASCII bytes in. Encoding to bytes
+    #     means a junk header simply fails to match instead of raising an error
+    #     outside our try/except in do_POST.
+    return hmac.compare_digest(supplied.encode(), expected.encode())
 
 
 # ---------- Vercel entry point ----------
