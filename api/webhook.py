@@ -10,6 +10,14 @@ Vercel automatically turns this file into a live endpoint at:
 
 Env var required (set in Vercel dashboard, see README):
     TELEGRAM_BOT_TOKEN
+
+Env var optional but strongly recommended (see README):
+    TELEGRAM_WEBHOOK_SECRET
+        Shared secret that must match the `secret_token` you pass to Telegram's
+        setWebhook call. When set, every POST must carry the matching
+        X-Telegram-Bot-Api-Secret-Token header or it gets a 403.
+        Leave it unset and the endpoint accepts posts from anyone -- fine for
+        local testing, not for a bot that is live on the internet.
 """
 
 import os
@@ -220,10 +228,37 @@ def handle_update(update):
     send_message(chat_id, format_status_message(status))
 
 
+# ----------------------------------------------------------------------------
+# Security: verify the request genuinely came from Telegram.
+# When you register the webhook you pass `secret_token`; Telegram then includes
+# it in every request as the header "X-Telegram-Bot-Api-Secret-Token".
+# We compare it to our own env var and reject anything that doesn't match.
+# This stops strangers from pretending to be Telegram and abusing the endpoint.
+# ----------------------------------------------------------------------------
+def _is_from_telegram(headers) -> bool:
+    expected = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
+    if not expected:
+        return True  # no secret configured -> don't lock anyone out (dev only)
+    return headers.get("X-Telegram-Bot-Api-Secret-Token") == expected
+
+
 # ---------- Vercel entry point ----------
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
+        # Refuse anyone who isn't Telegram *before* touching the payload, so a
+        # random visitor can never reach the cycle logic or the bot token.
+        # 403 (not 200) on purpose: it shows up loudly in the Vercel logs, and
+        # only impostors get it -- a real Telegram request always carries the
+        # header, so real traffic is unaffected.
+        if not _is_from_telegram(self.headers):
+            print("Rejected request: missing/incorrect X-Telegram-Bot-Api-Secret-Token")
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok": false, "error": "forbidden"}')
+            return
+
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)

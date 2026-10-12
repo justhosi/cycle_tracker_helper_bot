@@ -77,12 +77,22 @@ and max duration; it is optional and only cosmetic/tuning.
      in place, which forces it for you).
 3. In Vercel, add the environment variable `TELEGRAM_BOT_TOKEN` under
    **Project → Settings → Environment Variables**, then redeploy.
-4. Point Telegram at the endpoint (run this once, replacing the placeholders):
+4. Optional but recommended: also add `TELEGRAM_WEBHOOK_SECRET` in Vercel — a
+   random string of letters, digits, `_` and `-` (no spaces). Telegram will echo
+   it back on every request, and posts without it are rejected with a `403`.
+5. Point Telegram at the endpoint. Pass the same secret as `secret_token`, or
+   omit that flag if you skipped step 4:
    ```bash
    curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
-        -d "url=https://<your-project>.vercel.app/api/webhook"
+        -d "url=https://<your-project>.vercel.app/api/webhook" \
+        -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
    ```
-5. Send `/start` to your bot to check it answers.
+6. Send `/start` to your bot to check it answers.
+
+> Warning: `TELEGRAM_WEBHOOK_SECRET` and Telegram's `secret_token` must match. If
+> they don't (or you set the env var but registered without the flag), every
+> update is rejected and the bot goes quiet — the Vercel logs will show
+> `Rejected request: missing/incorrect X-Telegram-Bot-Api-Secret-Token`.
 
 ## Notes
 
