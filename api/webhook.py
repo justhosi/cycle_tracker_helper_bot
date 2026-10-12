@@ -142,6 +142,64 @@ def send_message(chat_id, text):
     requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
 
 
+# ---------- persistent storage (optional) ----------
+
+# ---------------------------------------------------------------------------
+# Optional persistent storage via Upstash Redis (from the Vercel Marketplace).
+#
+# We talk to it over plain HTTPS using the `requests` library we already
+# depend on, so no extra package is required. Vercel injects two env vars:
+#   KV_REST_API_URL    -> HTTPS endpoint of the database
+#   KV_REST_API_TOKEN  -> secret token authorizing reads/writes
+#
+# If those vars are missing (storage not set up yet), the helper functions
+# simply do nothing, so the bot keeps working in its current stateless mode.
+# ---------------------------------------------------------------------------
+
+KV_URL = os.environ.get("KV_REST_API_URL", "")
+KV_TOKEN = os.environ.get("KV_REST_API_TOKEN", "")
+
+
+def kv_enabled() -> bool:
+    """True only when both Upstash env vars are present (storage is configured)."""
+    return bool(KV_URL and KV_TOKEN)
+
+
+def kv_command(*args):
+    """
+    Run one Redis command through Upstash's REST API.
+
+    We POST a JSON array like ["SET", "user:123", "{...}"] to the base URL.
+    Returns the command's result, e.g. "OK" for SET or the stored string for GET.
+    """
+    resp = requests.post(
+        KV_URL,
+        headers={
+            "Authorization": f"Bearer {KV_TOKEN}",
+            "Content-Type": "application/json",
+        },
+        json=list(args),   # Upstash expects the command as a JSON array
+        timeout=5,
+    )
+    resp.raise_for_status()
+    return resp.json().get("result")
+
+
+def save_user(chat_id, data: dict) -> None:
+    """Persist one user's data as a small JSON blob under key 'user:<chat_id>'."""
+    if not kv_enabled():
+        return  # storage not configured -> stay stateless, don't crash
+    kv_command("SET", f"user:{chat_id}", json.dumps(data))
+
+
+def load_user(chat_id):
+    """Return the stored dict for a user, or None if we've never seen them."""
+    if not kv_enabled():
+        return None
+    raw = kv_command("GET", f"user:{chat_id}")
+    return json.loads(raw) if raw else None
+
+
 # ---------- message parsing ----------
 
 def extract_date(text):
