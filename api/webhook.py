@@ -473,6 +473,34 @@ def _is_from_telegram(headers) -> bool:
     return hmac.compare_digest(supplied.encode(), expected.encode())
 
 
+# ----------------------------------------------------------------------------
+# Debug helper: is the configured bot token actually usable?
+#
+# A wrong (or revoked) TELEGRAM_BOT_TOKEN is nasty to diagnose because the bot
+# still answers Telegram with 200 -- it just fails to SEND the reply, and that
+# failure is easy to miss. So we ask Telegram "who are you?" with our token and
+# summarise the answer. Only a status word is derived here; the token itself is
+# never returned.
+# ----------------------------------------------------------------------------
+def _telegram_token_status() -> str:
+    """Return 'missing', 'valid', 'invalid', or 'unreachable' for the bot token."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        return "missing"
+    try:
+        resp = requests.get(
+            f"{TELEGRAM_API_BASE.format(token=token)}/getMe",
+            timeout=5,
+        )
+        # Telegram answers 200 + {"ok": true, ...} for a good token, and a
+        # 401/404 with "ok": false for a revoked/bogus one.
+        if resp.status_code == 200 and resp.json().get("ok"):
+            return "valid"
+        return "invalid"
+    except Exception:  # noqa: BLE001 - a probe must never break the health check
+        return "unreachable"
+
+
 # ---------- Vercel entry point ----------
 
 class handler(BaseHTTPRequestHandler):
@@ -513,14 +541,18 @@ class handler(BaseHTTPRequestHandler):
         #     every POST, so the secret check looks "not working"; and
         #   * missing Upstash credentials -> per-chat memory is silently off.
         # Both are invisible from the outside, so we report their *presence*
-        # as plain booleans. Only "yes"/"no" is shown -- no secret value is
-        # ever read out here -- which is safe to leave world-readable.
+        # as plain booleans. We also ask Telegram whether the bot token works,
+        # because a bad token makes the bot silently fail to reply. Only short
+        # status words are shown -- no secret or token value is ever read out
+        # here -- which is safe to leave world-readable.
         secret_configured = "yes" if os.environ.get("TELEGRAM_WEBHOOK_SECRET") else "no"
         storage_configured = "yes" if kv_enabled() else "no"
+        token_status = _telegram_token_status()
 
         body = (
             f"Cycle bot webhook is running. "
-            f"(secret: {secret_configured}, storage: {storage_configured})"
+            f"(secret: {secret_configured}, storage: {storage_configured}, "
+            f"token: {token_status})"
         ).encode("utf-8")
 
         self.send_response(200)
